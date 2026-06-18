@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -58,14 +59,28 @@ func main() {
 		message := os.Args[3]
 		doCommit(message)
 	case "push":
-		if len(os.Args) < 5 {
-			fmt.Println("Usage: sagargit push <repo_url> <github_username> <personal_access_token>")
+		// Check if the user just typed "push" without arguments
+		if len(os.Args) == 2 {
+			repoURL, username, token := loadCredentials()
+			if token == "" {
+				fmt.Println("No saved credentials found.")
+				fmt.Println("For the first time, use: sagargit push <repo_url> <username> <token>")
+				os.Exit(1)
+			}
+			fmt.Println("Using saved credentials...")
+			pushRepo(repoURL, username, token)
+		} else if len(os.Args) >= 5 {
+			// First time push: save the credentials
+			repoURL := os.Args[2]
+			username := os.Args[3]
+			token := os.Args[4]
+			
+			saveCredentials(repoURL, username, token)
+			pushRepo(repoURL, username, token)
+		} else {
+			fmt.Println("Usage: sagargit push [<repo_url> <github_username> <personal_access_token>]")
 			os.Exit(1)
 		}
-		repoURL := os.Args[2]
-		username := os.Args[3]
-		token := os.Args[4]
-		pushRepo(repoURL, username, token)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		os.Exit(1)
@@ -332,4 +347,40 @@ func pushRepo(repoURL, username, token string) {
 	} else {
 		fmt.Println("Push completed successfully!")
 	}
+}
+
+// Config struct for saving repository credentials
+type RepoConfig struct {
+	URL      string `json:"url"`
+	Username string `json:"username"`
+	Token    string `json:"token"`
+}
+
+// saveCredentials securely saves the push info inside the hidden database
+func saveCredentials(repoURL, username, token string) {
+	config := RepoConfig{
+		URL:      repoURL,
+		Username: username,
+		Token:    token,
+	}
+	
+	configData, err := json.MarshalIndent(config, "", "  ")
+	if err == nil {
+		configPath := filepath.Join(".sagargit", "config.json")
+		os.WriteFile(configPath, configData, 0600) // 0600 means only you can read this file
+		fmt.Println("Credentials saved securely for future pushes.")
+	}
+}
+
+// loadCredentials reads the previously saved push info
+func loadCredentials() (string, string, string) {
+	configPath := filepath.Join(".sagargit", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", "", ""
+	}
+
+	var config RepoConfig
+	json.Unmarshal(data, &config)
+	return config.URL, config.Username, config.Token
 }
