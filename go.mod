@@ -1,4 +1,4 @@
-module sagargit
+module github.com/mdshafiulalamsagar/custom-VCS
 
 go 1.26.3
 
