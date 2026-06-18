@@ -58,9 +58,28 @@ func main() {
 		}
 		message := os.Args[3]
 		doCommit(message)
+	case "config":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: sagargit config \"<Your Name>\" \"<your.email@example.com>\"")
+			os.Exit(1)
+		}
+		name := os.Args[2]
+		email := os.Args[3]
+		saveGlobalConfig(name, email)
 	case "push":
-		// Check if the user just typed "push" without arguments
-		if len(os.Args) == 2 {
+		forcePush := false
+		var pushArgs []string
+
+		// Identify if --force or -f is used, and separate other arguments
+		for _, arg := range os.Args[2:] {
+			if arg == "--force" || arg == "-f" {
+				forcePush = true
+			} else {
+				pushArgs = append(pushArgs, arg)
+			}
+		}
+
+		if len(pushArgs) == 0 {
 			repoURL, username, token := loadCredentials()
 			if token == "" {
 				fmt.Println("No saved credentials found.")
@@ -68,17 +87,16 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Println("Using saved credentials...")
-			pushRepo(repoURL, username, token)
-		} else if len(os.Args) >= 5 {
-			// First time push: save the credentials
-			repoURL := os.Args[2]
-			username := os.Args[3]
-			token := os.Args[4]
-			
+			pushRepo(repoURL, username, token, forcePush)
+		} else if len(pushArgs) >= 3 {
+			repoURL := pushArgs[0]
+			username := pushArgs[1]
+			token := pushArgs[2]
+
 			saveCredentials(repoURL, username, token)
-			pushRepo(repoURL, username, token)
+			pushRepo(repoURL, username, token, forcePush)
 		} else {
-			fmt.Println("Usage: sagargit push [<repo_url> <github_username> <personal_access_token>]")
+			fmt.Println("Usage: sagargit push [-f] [<repo_url> <github_username> <personal_access_token>]")
 			os.Exit(1)
 		}
 	default:
@@ -232,8 +250,15 @@ func doCommit(message string) {
 }
 
 func commitTree(treeHash, parentHash, message string) string {
-	authorName := "Sagar Bhai"
-	authorEmail := "sagar@scalerverse.com"
+	// Dynamically load user identity from global config
+	authorName, authorEmail := loadGlobalConfig()
+	
+	// If identity is missing, stop the commit and instruct the user
+	if authorName == "" || authorEmail == "" {
+		fmt.Println("Error: Identity not configured.")
+		fmt.Println("Please run: sagargit config \"Your Name\" \"your.email@example.com\"")
+		os.Exit(1)
+	}
 	
 	now := time.Now()
 	timestamp := now.Unix()
@@ -307,19 +332,27 @@ func catFile(hash string) {
 	}
 }
 
-func pushRepo(repoURL, username, token string) {
-	fmt.Println("Preparing to push to remote...")
+// pushRepo handles connecting to GitHub and pushing our custom .sagargit database
+func pushRepo(repoURL, username, token string, forcePush bool) {
+	if forcePush {
+		fmt.Println("Preparing to FORCE push to remote...")
+	} else {
+		fmt.Println("Preparing to push to remote...")
+	}
 
+	// 1. Map our custom '.sagargit' directory to go-git's filesystem storage instead of the default '.git'
 	dotFS := osfs.New(".sagargit")
 	worktreeFS := osfs.New(".")
 	storage := filesystem.NewStorage(dotFS, cache.NewObjectLRUDefault())
 
+	// 2. Open the virtual repository using our custom storage and working tree
 	repo, err := git.Open(storage, worktreeFS)
 	if err != nil {
 		fmt.Printf("Error opening local repository: %v\n", err)
 		os.Exit(1)
 	}
 
+	// 3. Create or define the remote destination (origin) for pushing
 	_, err = repo.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{repoURL},
@@ -329,13 +362,15 @@ func pushRepo(repoURL, username, token string) {
 		os.Exit(1)
 	}
 
+	// 4. Execute the push operation with GitHub Personal Access Token authentication
 	err = repo.Push(&git.PushOptions{
 		RemoteName: "origin",
 		Auth: &http.BasicAuth{
 			Username: username,
-			Password: token,
+			Password: token, // GitHub strictly requires a Personal Access Token (PAT) here
 		},
-		Progress: os.Stdout,
+		Force:    forcePush, // This is the magic flag that enables force push
+		Progress: os.Stdout, // Output the upload progress to the terminal
 	})
 
 	if err != nil {
@@ -383,4 +418,44 @@ func loadCredentials() (string, string, string) {
 	var config RepoConfig
 	json.Unmarshal(data, &config)
 	return config.URL, config.Username, config.Token
+}
+
+// GlobalConfig struct holds the user's global identity
+type GlobalConfig struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// saveGlobalConfig securely saves the user's identity to their PC's home folder
+func saveGlobalConfig(name, email string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("Error finding home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	configPath := filepath.Join(home, ".sagargitconfig")
+	config := GlobalConfig{Name: name, Email: email}
+	
+	data, _ := json.MarshalIndent(config, "", "  ")
+	os.WriteFile(configPath, data, 0644)
+	fmt.Println("Global identity configured successfully!")
+}
+
+// loadGlobalConfig reads the identity from the PC's home folder
+func loadGlobalConfig() (string, string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+
+	configPath := filepath.Join(home, ".sagargitconfig")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", "" // File doesn't exist yet
+	}
+
+	var config GlobalConfig
+	json.Unmarshal(data, &config)
+	return config.Name, config.Email
 }
